@@ -82,4 +82,4 @@ model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accur
 model.fit(X_train_reshaped, y_train, epochs=10, batch_size=32, validation_data=(X_test_reshaped, y_test))
 
 # 14. 모델 저장
-model.save('pet_activity_cnn_rnn_model4.h5')
+model.save('pet_activity_cnn_rnn_model.h5')
