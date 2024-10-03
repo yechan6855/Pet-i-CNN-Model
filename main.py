@@ -1,91 +1,85 @@
 import pandas as pd
 import numpy as np
-from matplotlib import pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, LSTM, Conv1D, MaxPooling1D, Flatten
+from tensorflow.keras.utils import to_categorical
 
-# Metal 가속 활성화
-physical_devices = tf.config.list_physical_devices('GPU')
-if len(physical_devices) > 0:
-    tf.config.experimental.set_memory_growth(physical_devices[0], True)
-    print("Metal acceleration enabled")
+# 1. 데이터 불러오기
+data = pd.read_csv('./dataset/DogMoveData.csv')
 
-# 데이터 로드
-dog_info = pd.read_csv('./dataset/DogInfo.csv')
-dog_move_data = pd.read_csv('./dataset/DogMoveData.csv')
+# 2. 제거할 행동 리스트
+remove_behaviors = ['Bowing', 'Jumping', 'Tugging',
+                    'Synchronization', 'Extra_Synchronization', 'Lying chest',
+                    'Sniffing', 'Playing', 'Panting', 'Eating', 'Pacing',
+                    'Drinking', 'Carrying object', '<undefined>']
 
-# 센서 데이터 선택
-sensor_columns = ['ABack_x', 'ABack_y', 'ABack_z', 'ANeck_x', 'ANeck_y', 'ANeck_z',
-                  'GBack_x', 'GBack_y', 'GBack_z', 'GNeck_x', 'GNeck_y', 'GNeck_z']
+# 3. 제거할 행동을 제외한 데이터 필터링
+filtered_movedata = data[~data['Behavior_1'].isin(remove_behaviors)]
 
-X = dog_move_data[sensor_columns]
-y = dog_move_data['Behavior_1']  # 주요 행동만 예측
+# 4. Task별로 각 행동에 맞는 데이터만 남기고 나머지 제거
+# 각 행동에 맞는 Task를 남기고, 나머지를 제거
+filter_conditions = (
+    (filtered_movedata['Behavior_1'] == 'Walking') & (filtered_movedata['Task'] == 'Task walk') |
+    (filtered_movedata['Behavior_1'] == 'Trotting') & (filtered_movedata['Task'] == 'Task trot') |
+    (filtered_movedata['Behavior_1'] == 'Sitting') & (filtered_movedata['Task'] == 'Task sit') |
+    (filtered_movedata['Behavior_1'] == 'Standing') & (filtered_movedata['Task'] == 'Task stand') |
+    (filtered_movedata['Behavior_1'] == 'Shaking') |
+    (filtered_movedata['Behavior_1'] == 'Galloping')
+)
 
-# 데이터 정규화
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+filtered_movedata = filtered_movedata[filter_conditions]
 
-# 훈련 및 테스트 세트 분할
-X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+# 필터링된 데이터에서 Behavior_1의 상태 빈도 계산 및 출력
+behavior_counts = filtered_movedata['Behavior_1'].value_counts()
+print("Filtered Behavior Counts:")
+print(behavior_counts)
 
-# 고유한 행동 클래스 수 확인
-num_classes = y.nunique()
+# 5. 필요한 컬럼만 선택
+sensor_columns = ['GNeck_x', 'GNeck_y', 'GNeck_z','ANeck_x', 'ANeck_y', 'ANeck_z']
+activity_column = 'Behavior_1'
 
-# 모델 구축
-model = keras.Sequential([
-    layers.Dense(64, activation='relu', input_shape=(12,)),
-    layers.Dense(32, activation='relu'),
-    layers.Dense(num_classes, activation='softmax')
-])
+# 선택한 컬럼으로 새로운 데이터셋 생성 (복사본 명시적으로 생성)
+sensor_data = filtered_movedata[sensor_columns].copy()
+activity_data = filtered_movedata[activity_column].copy()
 
-# 모델 컴파일
-model.compile(optimizer='adam',
-              loss='sparse_categorical_crossentropy',
-              metrics=['accuracy'])
+# 6. 결측치 처리 (필요 시)
+sensor_data.fillna(0, inplace=True)
+activity_data.fillna('undefined', inplace=True)
 
-# 레이블 인코딩
-y_train_encoded = pd.Categorical(y_train).codes
-y_test_encoded = pd.Categorical(y_test).codes
+# 7. 라벨 인코딩 (활동 상태를 숫자로 변환)
+le = LabelEncoder()
+activity_data_encoded = le.fit_transform(activity_data)
 
-# 모델 훈련
-history = model.fit(X_train, y_train_encoded,
-                    epochs=35,
-                    batch_size=64,
-                    validation_split=0.2)
+# 8. 데이터셋을 훈련 및 테스트 데이터로 분할
+X_train, X_test, y_train, y_test = train_test_split(sensor_data, activity_data_encoded, test_size=0.2, random_state=42)
 
-# 모델 평가
-test_loss, test_acc = model.evaluate(X_test, y_test_encoded)
-print(f'Test accuracy: {test_acc}')
+# 9. 레이블을 원-핫 인코딩 (클래스 수 6개로 고정)
+y_train = to_categorical(y_train, num_classes=6)
+y_test = to_categorical(y_test, num_classes=6)
 
-# 모델 저장
-model.save('gpu_test_model.h5')
+# 10. 데이터 차원 맞추기 (CNN을 위한 3차원으로 변환)
+X_train_reshaped = np.expand_dims(X_train.values, axis=-1)
+X_test_reshaped = np.expand_dims(X_test.values, axis=-1)
 
-plt.figure(figsize=(12, 4))
-plt.subplot(1, 2, 1)
-plt.plot(history.history['loss'], label='Training Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.title('Training and Validation Loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
+# 11. 모델 설계 (CNN + LSTM 구조)
+model = Sequential()
 
-plt.subplot(1, 2, 2)
-plt.plot(history.history['accuracy'], label='Training Accuracy')
-plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-plt.title('Training and Validation Accuracy')
-plt.xlabel('Epochs')
-plt.ylabel('Accuracy')
-plt.legend()
-plt.show()
+# CNN 레이어 추가
+model.add(Conv1D(filters=64, kernel_size=2, activation='relu', input_shape=(X_train_reshaped.shape[1], 1)))
+model.add(MaxPooling1D(pool_size=2))
 
-# 새로운 데이터에 대한 예측 (예시)
-new_data = X_test[:5]  # 테스트 데이터의 처음 5개 샘플 사용
-predictions = model.predict(new_data)
-predicted_classes = np.argmax(predictions, axis=1)
+# LSTM 레이어 추가
+model.add(LSTM(64, return_sequences=False))
+model.add(Dense(32, activation='relu'))
+model.add(Dense(6, activation='softmax'))  # 클래스 수 6개로 고정
 
-# 예측 결과 출력
-for i, pred in enumerate(predicted_classes):
-    print(f"Sample {i+1} predicted behavior: {y.cat.categories[pred]}")
+# 12. 모델 컴파일
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# 13. 모델 훈련
+model.fit(X_train_reshaped, y_train, epochs=10, batch_size=32, validation_data=(X_test_reshaped, y_test))
+
+# 14. 모델 저장
+model.save('pet_activity_cnn_rnn_model4.h5')
